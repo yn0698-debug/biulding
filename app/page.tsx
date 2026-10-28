@@ -5,6 +5,8 @@ import Image from 'next/image';
 import {LayoutDashboard, Users, PhoneCall, CalendarDays, ClipboardCheck, Wallet, BarChart3, Search, Plus, Download, Settings, Pencil, Trash2, Check, ArrowRight} from 'lucide-react';
 import {initialMembers, initialMeetings, initialAgendas, fields, committees, type Member, type Meeting, type Agenda} from '../lib/mock';
 import {STORAGE_KEY, inviteStatuses, results, nextId, isDate, parseData, removeRecord, changeInvite, changeAllowance, type AdminData} from '../lib/admin';
+import CloudAccess from './cloud-access';
+import {writeWorkspace, type CloudConnection} from '../lib/supabase';
 
 const menus = [
   {id:'dashboard', label:'세종시 건축위원회', icon:LayoutDashboard, children:[['overview','업무 현황']]},
@@ -33,8 +35,13 @@ function csv(name:string, rows:(string|number)[][]) {
   download(name+'.csv',content,'text/csv;charset=utf-8');
 }
 
-export default function Home() {
-  const [data,setData]=useState<AdminData>(initialData);
+export default function Page() {return <CloudAccess>{cloud=><Home cloud={cloud}/>}</CloudAccess>;}
+
+function Home({cloud}:{cloud?:CloudConnection}) {
+  const [data,setData]=useState<AdminData>(cloud?.initial.data??initialData);
+  const revision=useRef(cloud?.initial.revision??0);
+  const savingLock=useRef(false);
+  const [saving,setSaving]=useState(false);
   const [ready,setReady]=useState(false);
   const [storageIssue,setStorageIssue]=useState('');
   const [notice,setNotice]=useState('');
@@ -49,29 +56,36 @@ export default function Home() {
   const {members,meetings,agendas,invites,allowances}=data;
 
   useEffect(()=>{
+    if(cloud) {setReady(true);return;}
     try {const stored=localStorage.getItem(STORAGE_KEY); if (stored) setData(parseData(JSON.parse(stored)));}
     catch {setStorageIssue('저장된 데이터를 읽지 못했습니다. 기존 저장 내용은 유지했습니다. 백업 파일을 복원하거나 브라우저 저장소 설정을 확인하세요.');}
     setReady(true);
     const onStorage=(event:StorageEvent)=>{if(event.key===STORAGE_KEY || event.key===null) setStorageIssue('다른 탭에서 데이터가 변경되었습니다. 이 탭을 새로고침한 후 작업하세요.');};
     window.addEventListener('storage',onStorage); return ()=>window.removeEventListener('storage',onStorage);
-  },[]);
+  },[cloud]);
   useEffect(()=>{
-    if(!hasUnsaved) return;
+    if(!hasUnsaved&&!saving) return;
     const warn=(event:BeforeUnloadEvent)=>{event.preventDefault();};
     window.addEventListener('beforeunload',warn); return ()=>window.removeEventListener('beforeunload',warn);
-  },[hasUnsaved]);
+  },[hasUnsaved,saving]);
   useEffect(()=>{if(meetingId!==0&&!meetings.some(x=>x.id===meetingId)) setMeetingId(meetings[0]?.id ?? 0);},[meetings,meetingId]);
 
-  function save(next:AdminData, message='변경 내용을 저장했습니다.', restoring=false) {
-    if(!ready) return false;
-    if(storageIssue && !restoring) {setNotice('저장소 문제를 먼저 해결해 주세요. 데이터 관리에서 백업을 복원할 수 있습니다.'); return false;}
+  async function save(next:AdminData, message='변경 내용을 저장했습니다.', restoring=false) {
+    if(!ready||savingLock.current) return false;
+    if(storageIssue && (cloud||!restoring)) {setNotice(cloud?'공유 데이터를 다시 불러온 뒤 저장하세요.':'저장소 문제를 먼저 해결해 주세요. 데이터 관리에서 백업을 복원할 수 있습니다.'); return false;}
     try {parseData(next);} catch(error) {setNotice(errorText(error));return false;}
+    savingLock.current=true;setSaving(true);
     try {
-      localStorage.setItem(STORAGE_KEY,JSON.stringify(next));
+      if(cloud) {const result=await writeWorkspace(cloud.client,revision.current,next);revision.current=result.revision;}
+      else localStorage.setItem(STORAGE_KEY,JSON.stringify(next));
       setData(next); setSavedAt(new Date().toLocaleTimeString('ko-KR')); setNotice(message); setStorageIssue(''); return true;
-    } catch(error) {setNotice('저장하지 못했습니다. '+errorText(error)+' 브라우저 저장 공간과 권한을 확인하세요.'); return false;}
+    } catch(error) {
+      const message=errorText(error);setNotice('저장하지 못했습니다. '+message);
+      if(cloud) setStorageIssue('공유 DB 저장에 실패했습니다. 현재 입력을 확인한 뒤 새로고침해서 DB 최신 상태를 불러오세요.');
+      return false;
+    } finally {savingLock.current=false;setSaving(false);}
   }
-  function change(action:()=>AdminData, message?:string) {try {return save(action(),message);} catch(error) {setNotice(errorText(error)); return false;}}
+  async function change(action:()=>AdminData, message?:string) {try {return await save(action(),message);} catch(error) {setNotice(errorText(error)); return false;}}
   function navigate(nextTab:string,nextSub:string,id:number|null=null) {
     if(hasUnsaved && !window.confirm('저장하지 않은 입력 내용이 있습니다. 이동하시겠습니까?')) return;
     setPendingAllowances({});
@@ -83,7 +97,7 @@ export default function Home() {
     try {const next=removeRecord(data,kind,id); if(window.confirm(`‘${name}’ 항목을 삭제하시겠습니까? 삭제 후에는 백업 파일로만 복원할 수 있습니다.`)) save(next,'삭제했습니다.');}
     catch(error) {setNotice(errorText(error));}
   }
-  function submitMember(event:FormEvent<HTMLFormElement>) {
+  async function submitMember(event:FormEvent<HTMLFormElement>) {
     event.preventDefault();const form=new FormData(event.currentTarget);
     const start=get(form,'start'),end=get(form,'end');
     if(!isDate(start)||!isDate(end)||start>end) return setNotice('임기 시작일과 종료일을 확인하세요.');
@@ -91,25 +105,25 @@ export default function Home() {
     if(!selectedFields.length||!selectedCommittees.length) return setNotice('전문 분야와 소속 위원회를 각각 하나 이상 선택하세요.');
     const old=members.find(x=>x.id===editId);
     const member:Member={id:old?.id??nextId(members),name:get(form,'name'),gender:get(form,'gender') as Member['gender'],organization:get(form,'organization'),phone:get(form,'phone'),term:`${start} ~ ${end}`,fields:selectedFields,committees:selectedCommittees,invites:old?.invites??0,attended:old?.attended??0};
-    if(save({...data,members:old?members.map(x=>x.id===old.id?member:x):[...members,member]},old?'위원 정보를 수정했습니다.':'위원을 등록했습니다.')) {setDirty(false);setSub('list');setEditId(null);}
+    if(await save({...data,members:old?members.map(x=>x.id===old.id?member:x):[...members,member]},old?'위원 정보를 수정했습니다.':'위원을 등록했습니다.')) {setDirty(false);setSub('list');setEditId(null);}
   }
-  function submitMeeting(event:FormEvent<HTMLFormElement>) {
+  async function submitMeeting(event:FormEvent<HTMLFormElement>) {
     event.preventDefault();const form=new FormData(event.currentTarget); const old=meetings.find(x=>x.id===editId);
     const meeting:Meeting={id:old?.id??nextId(meetings),title:get(form,'title'),date:get(form,'date'),type:get(form,'type'),mode:get(form,'mode') as Meeting['mode'],status:get(form,'status')};
     if(!isDate(meeting.date)) return setNotice('올바른 개최일을 입력하세요.');
-    if(save({...data,meetings:old?meetings.map(x=>x.id===old.id?meeting:x):[...meetings,meeting]},old?'회의를 수정했습니다.':'회의를 등록했습니다.')) {setDirty(false);setSub('list');setEditId(null);setMeetingId(meeting.id);}
+    if(await save({...data,meetings:old?meetings.map(x=>x.id===old.id?meeting:x):[...meetings,meeting]},old?'회의를 수정했습니다.':'회의를 등록했습니다.')) {setDirty(false);setSub('list');setEditId(null);setMeetingId(meeting.id);}
   }
-  function submitAgenda(event:FormEvent<HTMLFormElement>) {
+  async function submitAgenda(event:FormEvent<HTMLFormElement>) {
     event.preventDefault();const form=new FormData(event.currentTarget);const old=agendas.find(x=>x.id===editId);
     const agenda:Agenda={id:old?.id??nextId(agendas),title:get(form,'title'),location:get(form,'location'),meetingId:Number(get(form,'meetingId')),result:get(form,'result'),...(get(form,'previousId')?{previousId:Number(get(form,'previousId'))}:{})};
-    if(save({...data,agendas:old?agendas.map(x=>x.id===old.id?agenda:x):[...agendas,agenda]},old?'안건을 수정했습니다.':'안건을 등록했습니다.')) {setDirty(false);setSub('agendas');setEditId(null);}
+    if(await save({...data,agendas:old?agendas.map(x=>x.id===old.id?agenda:x):[...agendas,agenda]},old?'안건을 수정했습니다.':'안건을 등록했습니다.')) {setDirty(false);setSub('agendas');setEditId(null);}
   }
   async function restore(file:File|undefined) {
     if(!file) return;
     try {
       if(file.size>5*1024*1024) throw new Error('5MB 이하의 백업 파일을 선택하세요.');
       const next=parseData(JSON.parse(await file.text()));
-      if(window.confirm(`위원 ${next.members.length}명, 회의 ${next.meetings.length}건, 안건 ${next.agendas.length}건을 복원합니다. 현재 데이터와 저장하지 않은 입력 내용을 모두 교체하시겠습니까?`)) {if(save(next,'백업을 복원했습니다.',true)) {setDirty(false);setEditId(null);}}
+      if(window.confirm(`위원 ${next.members.length}명, 회의 ${next.meetings.length}건, 안건 ${next.agendas.length}건을 복원합니다. ${cloud?'모든 관리자가 공유하는 DB의':'현재'} 데이터와 저장하지 않은 입력 내용을 모두 교체하시겠습니까?`)) {if(await save(next,'백업을 복원했습니다.',true)) {setDirty(false);setEditId(null);}}
     } catch(error) {setNotice('복원하지 못했습니다. '+errorText(error));}
     finally {if(fileInput.current) fileInput.current.value='';}
   }
@@ -130,13 +144,13 @@ export default function Home() {
   const search=<label className="search"><Search size={16}/><input aria-label="검색" placeholder="검색어를 입력하세요" value={query} onChange={e=>setQuery(e.target.value)}/></label>;
   const cancel=<button type="button" onClick={()=>navigate(tab,sub==='agendaForm'?'agendas':'list')}>취소</button>;
 
-  return <div className="shell">
-    <aside className="sidebar"><div className="brand"><Image className="brand-logo" src="/branding/sejong-city-logo.jpg" alt="세종특별자치시 로고" width={170} height={100} priority/><div>세종시 건축위원회<small>운영자 관리 화면</small></div></div>
+  return <div className="shell" aria-busy={saving}>
+    <aside className="sidebar" inert={saving}><div className="brand"><Image className="brand-logo" src="/branding/sejong-city-logo.jpg" alt="세종특별자치시 로고" width={170} height={100} priority/><div>세종시 건축위원회<small>운영자 관리 화면</small></div></div>
       <nav aria-label="주 메뉴">{menus.map(item=><div key={item.id}><button className={tab===item.id?'active':''} aria-expanded={tab===item.id} onClick={()=>navigate(item.id,item.children[0][0])}><item.icon size={18}/>{item.label}</button>{tab===item.id&&<div className="subnav">{item.children.map(([id,label])=><button key={id} className={sub===id?'selected':''} aria-current={sub===id?'page':undefined} onClick={()=>navigate(item.id,id)}>{id===sub&&editId!==null?'정보 수정':label}</button>)}</div>}</div>)}</nav>
-      <div className="sidefoot">브라우저 저장 방식 · 관리자 기능 미리보기</div>
+      <div className="sidefoot">{cloud?'공유 DB · 관리자 전용':'브라우저 저장 방식 · 관리자 기능 미리보기'}{cloud&&<><p>{cloud.email}</p><button onClick={()=>{if(!hasUnsaved||window.confirm('저장하지 않은 입력을 버리고 로그아웃하시겠습니까?')) void cloud.signOut().catch(()=>setNotice('로그아웃하지 못했습니다.'));}}>로그아웃</button></>}</div>
     </aside>
-    <main className="main" key={viewKey}><header><div><p className="eyebrow">운영자 업무 공간 / {menu.label}</p><h1>{editId!==null?'정보 수정':menu.children.find(x=>x[0]===sub)?.[1]}</h1><p>등록부터 섭외, 심의 결과와 수당까지 한곳에서 관리하세요.</p></div><span className="chip"><Check size={14}/>{!ready?'불러오는 중':storageIssue?'저장소 확인 필요':savedAt?`${savedAt} 저장됨`:'이 브라우저에 저장'}</span></header>
-      <div className="storage-banner">입력 내용은 현재 기기의 같은 브라우저에 저장됩니다. 다른 관리자·기기와 공유되지 않습니다. <button onClick={()=>navigate('settings','backup')}>백업 관리 <ArrowRight size={13}/></button></div>
+    <main className="main" key={viewKey} inert={saving}><header><div><p className="eyebrow">운영자 업무 공간 / {menu.label}</p><h1>{editId!==null?'정보 수정':menu.children.find(x=>x[0]===sub)?.[1]}</h1><p>등록부터 섭외, 심의 결과와 수당까지 한곳에서 관리하세요.</p></div><div className="actions"><span className="chip"><Check size={14}/>{!ready?'불러오는 중':storageIssue?'저장소 확인 필요':savedAt?`${savedAt} 저장됨`:(cloud?'Supabase 공유 DB':'이 브라우저에 저장')}</span>{cloud&&<button onClick={()=>{if(!hasUnsaved||window.confirm('저장하지 않은 입력을 버리고 로그아웃하시겠습니까?')) void cloud.signOut().catch(()=>setNotice('로그아웃하지 못했습니다.'));}}>로그아웃</button>}</div></header>
+      <div className="storage-banner">{cloud?'승인된 관리자들이 공유하는 데이터베이스입니다. 다른 관리자의 변경 내용은 새로고침하면 반영됩니다.':'입력 내용은 현재 기기의 같은 브라우저에 저장됩니다. 다른 관리자·기기와 공유되지 않습니다.'} <button onClick={()=>navigate('settings','backup')}>백업 관리 <ArrowRight size={13}/></button></div>
       {storageIssue&&<div className="notice error" role="alert">{storageIssue}</div>}
       {notice&&<div className="notice" role="status">{notice}<button aria-label="알림 닫기" onClick={()=>setNotice('')}>×</button></div>}
       {!ready?<section>저장된 내용을 불러오고 있습니다.</section>:<>
@@ -165,10 +179,10 @@ export default function Home() {
 
       {tab==='stats'&&<><div className="cards"><Metric label="남성 위원" value={`${members.filter(x=>x.gender==='남').length}명`}/><Metric label="여성 위원" value={`${members.filter(x=>x.gender==='여').length}명`}/><Metric label="누적 확정 참석" value={`${attended.length}건`}/><Metric label="지급 완료 합계" value={`${paid.toLocaleString()}원`}/></div><section><h2>전문 분야별 구성</h2>{fields.map(f=>{const count=members.filter(x=>x.fields.includes(f)).length;return <div className="barrow" key={f}><span>{f}</span><div className="bar"><div style={{width:`${members.length?count/members.length*100:0}%`}}/></div><b>{count}명</b></div>;})}<p className="hint">복수 전문 분야는 중복 집계됩니다. 참석 통계는 새로 확정한 참석 기록을 기준으로 합니다.</p></section></>}
 
-      {tab==='settings'&&<><section><h2>백업·복원</h2><p>위원, 회의, 안건, 섭외·참석, 수당을 하나의 JSON 파일로 백업합니다. 브라우저 데이터를 지우거나 다른 기기로 이동하기 전에 백업하세요.</p><div className="backup-summary"><span>위원 <b>{members.length}명</b></span><span>회의 <b>{meetings.length}건</b></span><span>안건 <b>{agendas.length}건</b></span></div><div className="actions"><button className="primary" onClick={()=>download(`세종시건축위원회-백업-${new Date().toISOString().slice(0,10)}.json`,JSON.stringify(data,null,2),'application/json')}><Download size={16}/>전체 데이터 백업</button><button onClick={()=>fileInput.current?.click()}>백업 파일 복원</button><input ref={fileInput} aria-label="백업 파일 선택" hidden type="file" accept=".json,application/json" onChange={e=>void restore(e.target.files?.[0])}/></div><p className="hint">복원 전 현재 내용을 백업하세요. 형식과 데이터 간 연결을 검증한 뒤 전체 데이터를 교체합니다.</p></section><section><h2>저장 범위 안내</h2><p>현재는 관리자 입력 흐름을 확인하는 브라우저 저장 버전입니다. 로그인, 접근 권한, 서버 데이터베이스와 감사 이력은 연결되어 있지 않습니다. 실제 개인정보·심의 자료는 입력하지 마세요.</p></section></>}
+      {tab==='settings'&&<><section><h2>백업·복원</h2><p>위원, 회의, 안건, 섭외·참석, 수당을 하나의 JSON 파일로 백업합니다. 브라우저 데이터를 지우거나 다른 기기로 이동하기 전에 백업하세요.</p><div className="backup-summary"><span>위원 <b>{members.length}명</b></span><span>회의 <b>{meetings.length}건</b></span><span>안건 <b>{agendas.length}건</b></span></div><div className="actions"><button className="primary" onClick={()=>download(`세종시건축위원회-백업-${new Date().toISOString().slice(0,10)}.json`,JSON.stringify(data,null,2),'application/json')}><Download size={16}/>전체 데이터 백업</button><button onClick={()=>fileInput.current?.click()}>백업 파일 복원</button><input ref={fileInput} aria-label="백업 파일 선택" hidden type="file" accept=".json,application/json" onChange={e=>void restore(e.target.files?.[0])}/></div><p className="hint">복원 전 현재 내용을 백업하세요. 형식과 데이터 간 연결을 검증한 뒤 전체 데이터를 교체합니다.</p></section><section><h2>저장 범위 안내</h2><p>{cloud?'Supabase 로그인과 관리자 승인 목록으로 공유 데이터를 관리합니다. 백업 복원은 공유 DB 전체를 교체하므로 작업 전에 반드시 백업하세요. 변경 이력과 자동 백업 정책은 별도 운영 설정이 필요합니다.':'현재는 관리자 입력 흐름을 확인하는 브라우저 저장 버전입니다. 로그인, 접근 권한, 서버 데이터베이스와 감사 이력은 연결되어 있지 않습니다. 실제 개인정보·심의 자료는 입력하지 마세요.'}</p></section></>}
       </>}
-      <footer>세종시 건축위원회 · 관리자 기능 미리보기 · 실제 업무 사용 전 로그인과 서버 저장소 연결 필요</footer>
-    </main>
+      <footer>세종시 건축위원회 · {cloud?'승인된 관리자 전용 · Supabase DB 저장':'관리자 기능 미리보기 · 실제 업무 사용 전 로그인과 서버 저장소 연결 필요'}</footer>
+    </main>{saving&&<div className="save-blocker" role="status">변경 내용을 저장하고 있습니다…</div>}
   </div>;
 }
 
@@ -184,8 +198,8 @@ function DataTable({headers,rows,empty='조건에 맞는 데이터가 없습니�
   useEffect(()=>setPage(1),[signature]);
   return <><div className="tablewrap"><table><thead><tr>{headers.map(x=><th key={x}>{x}</th>)}</tr></thead><tbody>{rows.slice((current-1)*pageSize,current*pageSize).map((row,i)=><tr key={i}>{row.map((cell,j)=><td key={j}>{cell}</td>)}</tr>)}</tbody></table>{!rows.length&&<Empty>{empty}</Empty>}</div>{rows.length>0&&<div className="pagination"><span>총 {rows.length}건 · {current} / {pages} 페이지</span><div className="actions"><button disabled={current===1} onClick={()=>setPage(current-1)}>이전</button><button disabled={current===pages} onClick={()=>setPage(current+1)}>다음</button></div></div>}</>;
 }
-function AllowanceRow({name,amount,paid,onSave,onDirty}:{name:string;amount:number;paid:boolean;onSave:(amount:number,paid:boolean)=>boolean;onDirty:(value:boolean)=>void}) {
+function AllowanceRow({name,amount,paid,onSave,onDirty}:{name:string;amount:number;paid:boolean;onSave:(amount:number,paid:boolean)=>Promise<boolean>;onDirty:(value:boolean)=>void}) {
   const [draft,setDraft]=useState(String(amount)),[checked,setChecked]=useState(paid);
   const changed=draft!==String(amount)||checked!==paid;
-  return <form className="allowance-row" onSubmit={e=>{e.preventDefault();if(onSave(draft.trim()?Number(draft):NaN,checked)) onDirty(false);}}><strong>{name}</strong><Field label={`${name} 지급액 (원)`}><input aria-label={`${name} 지급액`} type="number" min="0" step="1" required value={draft} onChange={e=>{setDraft(e.target.value);onDirty(e.target.value!==String(amount)||checked!==paid);}}/></Field><label className="check-label"><input type="checkbox" checked={checked} onChange={e=>{setChecked(e.target.checked);onDirty(draft!==String(amount)||e.target.checked!==paid);}}/>지급 완료</label><button type="submit" className={changed?'primary':''} disabled={!changed}>저장</button>{changed&&<span className="hint">미저장</span>}</form>;
+  return <form className="allowance-row" onSubmit={async e=>{e.preventDefault();if(await onSave(draft.trim()?Number(draft):NaN,checked)) onDirty(false);}}><strong>{name}</strong><Field label={`${name} 지급액 (원)`}><input aria-label={`${name} 지급액`} type="number" min="0" step="1" required value={draft} onChange={e=>{setDraft(e.target.value);onDirty(e.target.value!==String(amount)||checked!==paid);}}/></Field><label className="check-label"><input type="checkbox" checked={checked} onChange={e=>{setChecked(e.target.checked);onDirty(draft!==String(amount)||e.target.checked!==paid);}}/>지급 완료</label><button type="submit" className={changed?'primary':''} disabled={!changed}>저장</button>{changed&&<span className="hint">미저장</span>}</form>;
 }
