@@ -5,7 +5,7 @@ import {LayoutDashboard,Users,PhoneCall,CalendarDays,ClipboardCheck,Wallet,BarCh
 type InviteStatus='참석 수락'|'참석 불가'|'확인 중'|'연락 안 됨'|'수락 후 취소';
 type Invite={meetingId:number;memberId:number;status:InviteStatus;attended?:boolean;confirmed?:boolean};
 type Allowance={meetingId:number;memberId:number;amount:number;paid:boolean};
-const tabs=[['dashboard','대시보드',LayoutDashboard],['members','위원 관리',Users],['invites','위원 섭외·참석',PhoneCall],['meetings','회의·안건',CalendarDays],['results','심의 결과',ClipboardCheck],['allowances','수당 관리',Wallet],['stats','통계',BarChart3]] as const;
+const tabs=[['dashboard','건축위원회',LayoutDashboard],['members','위원 관리',Users],['invites','위원 섭외·참석',PhoneCall],['meetings','회의·안건',CalendarDays],['results','심의 결과',ClipboardCheck],['allowances','수당 관리',Wallet],['stats','통계',BarChart3]] as const;
 const statuses:InviteStatus[]=['확인 중','참석 수락','참석 불가','연락 안 됨','수락 후 취소'];
 export default function Home(){
  const [tab,setTab]=useState<string>('dashboard');const [members,setMembers]=useState<Member[]>(initialMembers);const [meetings,setMeetings]=useState<Meeting[]>(initialMeetings);const [agendas,setAgendas]=useState<Agenda[]>(initialAgendas);const [invites,setInvites]=useState<Invite[]>([]);const [allowances,setAllowances]=useState<Allowance[]>([]);const [query,setQuery]=useState('');const [field,setField]=useState('전체');const [meetingId,setMeetingId]=useState(1);const [notice,setNotice]=useState('');
