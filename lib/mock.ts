@@ -1,0 +1,11 @@
+export type Member={id:number;name:string;gender:'남'|'여';organization:string;fields:string[];committees:string[];term:string;invites:number;attended:number;phone:string};
+export type Meeting={id:number;title:string;date:string;type:string;mode:'대면'|'서면';status:string};
+export type Agenda={id:number;title:string;location:string;meetingId:number;result:string;previousId?:number};
+export const fields=['건축계획','건축구조','교통','경관','도시계획','소방','환경','건축설비'];
+export const committees=['일반 건축위원회','건축구조 전문위원회','건축계획 전문위원회','기타 전문위원회'];
+const orgs=['세종대학교','한빛건축사사무소','중앙연구원','세종기술연구소','도시디자인연구소','한국안전연구원'];
+const surnames=['김','이','박','최','정','강','조','윤','장','임'];
+const given=['민준','서연','지훈','수빈','도윤','지우','하준','예린','준서','하은'];
+export const initialMembers:Member[]=Array.from({length:100},(_,i)=>({id:i+1,name:surnames[i%10]+given[(i*7+Math.floor(i/10))%10],gender:i%3===0?'여':'남',organization:orgs[i%orgs.length],fields:[fields[i%fields.length],...(i%4===0?[fields[(i+3)%fields.length]]:[])],committees:[committees[i%4],...(i%5===0?[committees[(i+1)%4]]:[])],term:'2025-01-01 ~ 2027-12-31',invites:(i*3)%15+1,attended:(i*2)%10,phone:'010-0000-'+String(i+1).padStart(4,'0')}));
+export const initialMeetings:Meeting[]=[{id:1,title:'2026년 제41회 건축위원회',date:'2026-11-05',type:committees[0],mode:'대면',status:'예정'},{id:2,title:'2026년 제42회 건축위원회',date:'2026-11-12',type:committees[0],mode:'서면',status:'예정'},{id:3,title:'2026년 제18회 구조 전문위원회',date:'2026-10-22',type:committees[1],mode:'대면',status:'완료'}];
+export const initialAgendas:Agenda[]=[{id:1,title:'가상 복합시설 신축 심의',location:'세종시 가상동 100',meetingId:1,result:'심의 전'},{id:2,title:'가상 공동주택 신축 심의',location:'세종시 예시동 200',meetingId:2,result:'심의 전'},{id:3,title:'가상 업무시설 구조 심의',location:'세종시 가상동 300',meetingId:3,result:'조건부 의결'},{id:4,title:'가상 업무시설 구조 재심의',location:'세종시 가상동 300',meetingId:1,result:'심의 전',previousId:3}];
